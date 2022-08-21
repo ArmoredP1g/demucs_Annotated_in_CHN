@@ -95,6 +95,7 @@ class LayerScale(nn.Module):
         return self.scale[:, None] * x
 
 
+#   定义残差结构
 class DConv(nn.Module):
     """
     New residual branches in each encoder layer.
@@ -153,6 +154,8 @@ class DConv(nn.Module):
                 norm_fn(2 * channels), nn.GLU(1),
                 LayerScale(channels, init),
             ]
+
+            # local attention 和 bilstm 只有在5, 6层使用
             if attn:
                 mods.insert(3, LocalState(hidden, heads=heads, ndecay=ndecay))
             if lstm:
@@ -166,6 +169,7 @@ class DConv(nn.Module):
         return x
 
 
+#   本地注意力机制，降低远离当前位置的权重，并限制了自我依赖
 class LocalState(nn.Module):
     """Local state allows to have attention based only on data (no positional embedding),
     but while setting a constraint on the time window (e.g. decaying penalty term).
@@ -176,50 +180,52 @@ class LocalState(nn.Module):
         super().__init__()
         assert channels % heads == 0, (channels, heads)
         self.heads = heads
-        self.nfreqs = nfreqs
+        self.nfreqs = nfreqs 
         self.ndecay = ndecay
-        self.content = nn.Conv1d(channels, channels, 1)
-        self.query = nn.Conv1d(channels, channels, 1)
-        self.key = nn.Conv1d(channels, channels, 1)
+        self.content = nn.Conv1d(channels, channels, 1) # 为啥不直接用linear呢？
+        self.query = nn.Conv1d(channels, channels, 1) # 为啥不直接用linear呢？
+        self.key = nn.Conv1d(channels, channels, 1) # 为啥不直接用linear呢？
         if nfreqs:
             self.query_freqs = nn.Conv1d(channels, heads * nfreqs, 1)
         if ndecay:
-            self.query_decay = nn.Conv1d(channels, heads * ndecay, 1)
+            self.query_decay = nn.Conv1d(channels, heads * ndecay, 1) # size为1的conv，相当于一次线性变换
             # Initialize decay close to zero (there is a sigmoid), for maximum initial window.
             self.query_decay.weight.data *= 0.01
             assert self.query_decay.bias is not None  # stupid type checker
             self.query_decay.bias.data[:] = -2
-        self.proj = nn.Conv1d(channels + heads * nfreqs, channels, 1)
-
+        self.proj = nn.Conv1d(channels + heads * nfreqs, channels, 1) #
     def forward(self, x):
-        B, C, T = x.shape
+        B, C, T = x.shape  # batch, channels, length
         heads = self.heads
         indexes = torch.arange(T, device=x.device, dtype=x.dtype)
-        # left index are keys, right index are queries
-        delta = indexes[:, None] - indexes[None, :]
+        # left index are Keys, right index are Queries
+        delta = indexes[:, None] - indexes[None, :] # 距离矩阵
 
         queries = self.query(x).view(B, heads, -1, T)
         keys = self.key(x).view(B, heads, -1, T)
         # t are keys, s are queries
         dots = torch.einsum("bhct,bhcs->bhts", keys, queries)
-        dots /= keys.shape[2]**0.5
+        dots /= keys.shape[2]**0.5  # sqrt()
         if self.nfreqs:
             periods = torch.arange(1, self.nfreqs + 1, device=x.device, dtype=x.dtype)
             freq_kernel = torch.cos(2 * math.pi * delta / periods.view(-1, 1, 1))
             freq_q = self.query_freqs(x).view(B, heads, -1, T) / self.nfreqs ** 0.5
             dots += torch.einsum("fts,bhfs->bhts", freq_kernel, freq_q)
         if self.ndecay:
-            decays = torch.arange(1, self.ndecay + 1, device=x.device, dtype=x.dtype)
+            #   单独算一个距离注意力，直接加到正常的注意力矩阵上
+            decays = torch.arange(1, self.ndecay + 1, device=x.device, dtype=x.dtype)   # 1234
             decay_q = self.query_decay(x).view(B, heads, -1, T)
-            decay_q = torch.sigmoid(decay_q) / 2
-            decay_kernel = - decays.view(-1, 1, 1) * delta.abs() / self.ndecay**0.5
-            dots += torch.einsum("fts,bhfs->bhts", decay_kernel, decay_q)
+            decay_q = torch.sigmoid(decay_q) / 2            # 为啥？
+            decay_kernel = - decays.view(-1, 1, 1) * delta.abs() / self.ndecay**0.5     # delta矩阵乘上1-5
+
+            dots += torch.einsum("dts,bhds->bhts", decay_kernel, decay_q)  # [4, 881, 881],[1, 4, 4, 881] -> [1, 4, 881, 881] 这是个啥变换？
 
         # Kill self reference.
         dots.masked_fill_(torch.eye(T, device=dots.device, dtype=torch.bool), -100)
+
         weights = torch.softmax(dots, dim=2)
 
-        content = self.content(x).view(B, heads, -1, T)
+        content = self.content(x).view(B, heads, -1, T) # 就是V
         result = torch.einsum("bhts,bhct->bhcs", weights, content)
         if self.nfreqs:
             time_sig = torch.einsum("bhts,fts->bhfs", weights, freq_kernel)

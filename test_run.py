@@ -7,6 +7,10 @@
 
 # 直接运行 方便调试
 
+# "args": [
+#     "C:\\Users\\29147\\source\\repos\\demucs_Annotated_in_CHN\\test.mp3"
+# ],
+
 from  demucs.separate import main
 
 if __name__ == '__main__':

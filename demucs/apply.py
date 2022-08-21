@@ -127,10 +127,14 @@ def apply_model(model, mix, shifts=1, split=True,
             and apply the oppositve shift to the output. This is repeated `shifts` time and
             all predictions are averaged. This effectively makes the model time equivariant
             and improves SDR by up to 0.2 points.
+            将输入随机位移0-0.5s，成功涨点0.2
+
         split (bool): if True, the input will be broken down in 8 seconds extracts
             and predictions will be performed individually on each and concatenated.
             Useful for model with large memory footprint like Tasnet.
+
         progress (bool): if True, show a progress bar (requires split=True)
+
         device (torch.device, str, or None): if provided, device on which to
             execute the computation, otherwise `mix.device` is assumed.
             When `device` is different from `mix.device`, only local computations will
@@ -154,6 +158,7 @@ def apply_model(model, mix, shifts=1, split=True,
         'device': device,
         'pool': pool,
     }
+    
     if isinstance(model, BagOfModels):
         # Special treatment for bag of model.
         # We explicitely apply multiple times `apply_model` so that the random shifts
@@ -164,7 +169,7 @@ def apply_model(model, mix, shifts=1, split=True,
             original_model_device = next(iter(sub_model.parameters())).device
             sub_model.to(device)
 
-            out = apply_model(sub_model, mix, **kwargs)
+            out = apply_model(sub_model, mix, **kwargs) #   计算
             sub_model.to(original_model_device)
             for k, inst_weight in enumerate(weight):
                 out[:, k, :, :] *= inst_weight
@@ -179,9 +184,12 @@ def apply_model(model, mix, shifts=1, split=True,
     model.to(device)
     assert transition_power >= 1, "transition_power < 1 leads to weird behavior."
     batch, channels, length = mix.shape
+
+
+
     if split:
         kwargs['split'] = False
-        out = th.zeros(batch, len(model.sources), channels, length, device=mix.device)
+        out = th.zeros(batch, len(model.sources), channels, length, device=mix.device)  #   
         sum_weight = th.zeros(length, device=mix.device)
         segment = int(model.samplerate * model.segment)
         stride = int((1 - overlap) * segment)

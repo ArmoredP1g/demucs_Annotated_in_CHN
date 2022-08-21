@@ -40,9 +40,10 @@ class ScaledEmbedding(nn.Module):
     def __init__(self, num_embeddings: int, embedding_dim: int,
                  scale: float = 10., smooth=False):
         super().__init__()
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)  # 512  48
         if smooth:
-            weight = torch.cumsum(self.embedding.weight.data, dim=0)
+            # 权重初始化
+            weight = torch.cumsum(self.embedding.weight.data, dim=0)    # 返回维度 dim 中 input 元素的累积和。
             # when summing gaussian, overscale raises as sqrt(n), so we nornalize by that.
             weight = weight / torch.arange(1, num_embeddings + 1).to(weight).sqrt()[:, None]
             self.embedding.weight.data[:] = weight
@@ -58,6 +59,7 @@ class ScaledEmbedding(nn.Module):
         return out
 
 
+#   通用编码器
 class HEncLayer(nn.Module):
     def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False,
                  freq=True, dconv=True, norm=True, context=0, dconv_kw={}, pad=True,
@@ -69,7 +71,7 @@ class HEncLayer(nn.Module):
             chout: number of output channels.
             norm_groups: number of groups for group norm.
             empty: used to make a layer with just the first conv. this is used
-                before merging the time and freq. branches.
+                before merging the time and freq. branches.  ?
             freq: this is acting on frequencies.
             dconv: insert DConv residual branches.
             norm: use GroupNorm.
@@ -87,7 +89,7 @@ class HEncLayer(nn.Module):
             pad = kernel_size // 4
         else:
             pad = 0
-        klass = nn.Conv1d
+        klass = nn.Conv1d   # 时域用一维卷积
         self.freq = freq
         self.kernel_size = kernel_size
         self.stride = stride
@@ -98,13 +100,16 @@ class HEncLayer(nn.Module):
             kernel_size = [kernel_size, 1]
             stride = [stride, 1]
             pad = [pad, 0]
-            klass = nn.Conv2d
+            klass = nn.Conv2d   # 频域用二维卷积
         self.conv = klass(chin, chout, kernel_size, stride, pad)
         if self.empty:
             return
-        self.norm1 = norm_fn(chout)
+        self.norm1 = norm_fn(chout) # GroupNorm
+
+
         self.rewrite = None
         if rewrite:
+            # add 1x1 conv at the end of the layer.
             self.rewrite = klass(chout, 2 * chout, 1 + 2 * context, 1, context)
             self.norm2 = norm_fn(2 * chout)
 
@@ -117,31 +122,44 @@ class HEncLayer(nn.Module):
         `inject` is used to inject the result from the time branch into the frequency branch,
         when both have the same stride.
         """
-        if not self.freq and x.dim() == 4:
+        if not self.freq and x.dim() == 4: 
             B, C, Fr, T = x.shape
-            x = x.view(B, -1, T)
+            x = x.view(B, -1, T)    # B, C*Fr, T
 
         if not self.freq:
             le = x.shape[-1]
+            # 若输入长度不能被步长整除
             if not le % self.stride == 0:
                 x = F.pad(x, (0, self.stride - (le % self.stride)))
-        y = self.conv(x)
+
+        y = self.conv(x)    # 仅对频率卷积 c:4->48   k:8,1   s:4,1   pad:2,0
+
+        # 参数empty为真，则直接返回卷积结果
+        # 否则 
         if self.empty:
             return y
+
+        
         if inject is not None:
             assert inject.shape[-1] == y.shape[-1], (inject.shape, y.shape)
             if inject.dim() == 3 and y.dim() == 4:
                 inject = inject[:, :, None]
             y = y + inject
-        y = F.gelu(self.norm1(y))
+
+        y = F.gelu(self.norm1(y))  # GroupNorm
+
         if self.dconv:
+            # 使用残差 对应gelu 与 glu 中间的部分
             if self.freq:
                 B, C, Fr, T = y.shape
-                y = y.permute(0, 2, 1, 3).reshape(-1, C, T)
-            y = self.dconv(y)
+                y = y.permute(0, 2, 1, 3).reshape(-1, C, T) # 1, 48, 512, 882 -> 1*512, 48, 882
+            y = self.dconv(y)   #  DConv对象 localState注意力机制包含再此
             if self.freq:
-                y = y.view(B, Fr, C, T).permute(0, 2, 1, 3)
+                y = y.view(B, Fr, C, T).permute(0, 2, 1, 3) # 维度恢复 1, 48, 512, 882
+
+
         if self.rewrite:
+            # add 1x1 conv at the end of the layer.
             z = self.norm2(self.rewrite(y))
             z = F.glu(z, dim=1)
         else:
@@ -245,6 +263,7 @@ class MultiWrap(nn.Module):
             return out, None
 
 
+#   通用解码器
 class HDecLayer(nn.Module):
     def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False,
                  freq=True, dconv=True, norm=True, context=1, dconv_kw={}, pad=True,
@@ -442,6 +461,7 @@ class HDemucs(nn.Module):
             dconv_init: initial scale for the DConv branch LayerScale.
             rescale: weight recaling trick
 
+
         """
         super().__init__()
         self.cac = cac
@@ -454,7 +474,7 @@ class HDemucs(nn.Module):
         self.depth = depth
         self.channels = channels
         self.samplerate = samplerate
-        self.segment = segment
+        self.segment = segment  # seems useless?
 
         self.nfft = nfft
         self.hop_length = nfft // 4
@@ -477,6 +497,8 @@ class HDemucs(nn.Module):
 
         chin = audio_channels
         chin_z = chin  # number of channels for the freq branch
+
+        # 如果考虑虚部则将虚数部独立成两(声道)个通道
         if self.cac:
             chin_z *= 2
         chout = channels_time or channels
@@ -505,11 +527,11 @@ class HDemucs(nn.Module):
             kw = {
                 'kernel_size': ker,
                 'stride': stri,
-                'freq': freq,
+                'freq': freq, # True
                 'pad': pad,
                 'norm': norm,
                 'rewrite': rewrite,
-                'norm_groups': norm_groups,
+                'norm_groups': norm_groups,  # 4?
                 'dconv_kw': {
                     'lstm': lstm,
                     'attn': attn,
@@ -534,6 +556,7 @@ class HDemucs(nn.Module):
                 chout_z = max(chout, chout_z)
                 chout = chout_z
 
+            #   频域分支encoder
             enc = HEncLayer(chin_z, chout_z,
                             dconv=dconv_mode & 1, context=context_enc, **kw)
             if hybrid and freq:
@@ -627,8 +650,8 @@ class HDemucs(nn.Module):
         # in which case we just move the complex dimension to the channel one.
         if self.cac:
             B, C, Fr, T = z.shape
-            m = torch.view_as_real(z).permute(0, 1, 4, 2, 3)
-            m = m.reshape(B, C * 2, Fr, T)
+            m = torch.view_as_real(z).permute(0, 1, 4, 2, 3) # 将虚数部分单独表示
+            m = m.reshape(B, C * 2, Fr, T)  #   将虚数部分作为两个额外的 channel，这是论文中频谱分支的输入通道是2(声道)*2(实部+虚部)的原因
         else:
             m = z.abs()
         return m
@@ -679,14 +702,14 @@ class HDemucs(nn.Module):
         return out.to(init)
 
     def forward(self, mix):
-        x = mix
+        x = mix                     # batch * channel * lenth
         length = x.shape[-1]
 
-        z = self._spec(mix)
-        mag = self._magnitude(z)
+        z = self._spec(mix)         # padding & stft    [1, 2, 2048, 872]
+        mag = self._magnitude(z)    # 将虚部作为单独的channel，这是论文中频谱分支的输入通道是2(声道)*2(实部+虚部)的原因
         x = mag
 
-        B, C, Fq, T = x.shape
+        B, C, Fq, T = x.shape       # [1, 4, 2048, 876]
 
         # unlike previous Demucs, we always normalize because it is easier.
         mean = x.mean(dim=(1, 2, 3), keepdim=True)
@@ -694,8 +717,8 @@ class HDemucs(nn.Module):
         x = (x - mean) / (1e-5 + std)
         # x will be the freq. branch input.
 
-        if self.hybrid:
-            # Prepare the time branch input.
+        if self.hybrid: 
+            # Prepare the time branch input. 时域分支
             xt = mix
             meant = xt.mean(dim=(1, 2), keepdim=True)
             stdt = xt.std(dim=(1, 2), keepdim=True)
@@ -716,20 +739,20 @@ class HDemucs(nn.Module):
                 xt = tenc(xt)
                 if not tenc.empty:
                     # save for skip connection
-                    saved_t.append(xt)
+                    saved_t.append(xt)  # 保存时域分支的中间结果
                 else:
                     # tenc contains just the first conv., so that now time and freq.
                     # branches have the same shape and can be merged.
                     inject = xt
-            x = encode(x, inject)
+            x = encode(x, inject) # `inject` is used to inject the result from the time branch into the frequency branch 这里encode是HEncLayer的对象
             if idx == 0 and self.freq_emb is not None:
                 # add frequency embedding to allow for non equivariant convolutions
                 # over the frequency axis.
                 frs = torch.arange(x.shape[-2], device=x.device)
-                emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x)
+                emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x) # 512 -> 512*48 -> 48*512 -> 1*48*512*1 -> 1*48*512*875(expand as x)
                 x = x + self.freq_emb_scale * emb
 
-            saved.append(x)
+            saved.append(x) # 保存频域分支的中间结果
 
         x = torch.zeros_like(x)
         if self.hybrid:

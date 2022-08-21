@@ -18,11 +18,13 @@ from .audio import AudioFile, convert_audio, save_audio
 from .pretrained import get_model_from_args, add_model_flags, ModelLoadingError
 
 
+#   加载音频文件
 def load_track(track, audio_channels, samplerate):
     errors = {}
     wav = None
 
     try:
+        # 读取音频文件，支持多种格式
         wav = AudioFile(track).read(
             streams=0,
             samplerate=samplerate,
@@ -111,7 +113,8 @@ def main():
     args = parser.parse_args()
 
     try:
-        model = get_model_from_args(args)
+        #   通过args.name 加载模型，默认是 mdx_extra_q
+        model = get_model_from_args(args)   
     except ModelLoadingError as error:
         fatal(error.args[0])
 
@@ -135,9 +138,13 @@ def main():
         fatal(
             'error: stem "{stem}" is not in selected model. STEM must be one of {sources}.'.format(
                 stem=args.stem, sources=', '.join(model.sources)))
-    out = args.out / args.name
-    out.mkdir(parents=True, exist_ok=True)
+
+    out = args.out / args.name  # 输出路径/文件夹名称，默认是'mdx_extra_q'
+    out.mkdir(parents=True, exist_ok=True) # 创建目录
     print(f"Separated tracks will be stored in {out.resolve()}")
+
+
+    #   处理参数中的每一条音频文件
     for track in args.tracks:
         if not track.exists():
             print(
@@ -146,10 +153,12 @@ def main():
                 file=sys.stderr)
             continue
         print(f"Separating track {track}")
-        wav = load_track(track, model.audio_channels, model.samplerate)
 
-        ref = wav.mean(0)
-        wav = (wav - ref.mean()) / ref.std()
+        #   加载音频转成tensor
+        wav = load_track(track, model.audio_channels, model.samplerate) 
+
+        ref = wav.mean(0)  #？？
+        wav = (wav - ref.mean()) / ref.std()  # 归一化
         sources = apply_model(model, wav[None], device=args.device, shifts=args.shifts,
                               split=args.split, overlap=args.overlap, progress=True,
                               num_workers=args.jobs)[0]
