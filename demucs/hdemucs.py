@@ -36,6 +36,9 @@ class ScaledEmbedding(nn.Module):
     """
     Boost learning rate for embeddings (with `scale`).
     Also, can make embeddings continuous with `smooth`.
+
+    看起来像是将每个频率embed成一个向量，向量的维度与enbed对象的通道数对应
+    并不是在频率维度加个三角函数的position embedding
     """
     def __init__(self, num_embeddings: int, embedding_dim: int,
                  scale: float = 10., smooth=False):
@@ -612,7 +615,7 @@ class HDemucs(nn.Module):
             # which is not supported by torch.stft.
             # Having all convolution operations follow this convention allow to easily
             # align the time and frequency branches later on.
-            assert hl == nfft // 4
+            assert hl == nfft // 4      # hoplenth 为窗口长度的四分之一
             le = int(math.ceil(x.shape[-1] / hl))
             pad = hl // 2 * 3
             if not self.hybrid_old:
@@ -748,7 +751,7 @@ class HDemucs(nn.Module):
             if idx == 0 and self.freq_emb is not None:
                 # add frequency embedding to allow for non equivariant convolutions
                 # over the frequency axis.
-                frs = torch.arange(x.shape[-2], device=x.device)
+                frs = torch.arange(x.shape[-2], device=x.device)    # x: 1, 48, 512, 876
                 emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x) # 512 -> 512*48 -> 48*512 -> 1*48*512*1 -> 1*48*512*875(expand as x)
                 x = x + self.freq_emb_scale * emb
 

@@ -20,7 +20,7 @@ def spectro(x, n_fft=512, hop_length=None, pad=0):
                 center=True,
                 return_complex=True,
                 pad_mode='reflect')
-    _, freqs, frame = z.shape
+    _, freqs, frame = z.shape       # freq = 1 + nfft/2
     return z.view(*other, freqs, frame)
 
 
